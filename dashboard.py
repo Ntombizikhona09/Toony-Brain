@@ -6,33 +6,41 @@ from tkinter import filedialog, messagebox
 from fuzzywuzzy import process
 import cv2
 import numpy as np
-import numpy as np
 import boto3
-import random
 
-# Define the categories for quiz generation
+# Global categories (used outside the class)
 categories = {
-    "Animals": ["Cattle", "Cow", "Livestock", "Mammal", "Dairy Cow", "Dog", "Cat", "Elephant", "Tiger", "Cow", "Cattle", "Livestock", "Mammal"],
-    "Fruits": ["Apple", "Banana", "Grapes", "Orange"],
-    "House Items": ["Chair", "Lamp", "Table", "Clock"],
-    "Shapes": ["Circle", "Square", "Triangle", "Rectangle"]
+    "Animals": ["Sheep", "Goat", "Cattle", "Cow", "Dog", "Cat", "Elephant",
+                "Tiger", "Bear", "Lion", "Monkey", "Giraffe", "Zebra", "Horse", "Panda", "Kangaroo", "Koala"],
+    "Wildlife": ["Lion", "Tiger", "Elephant", "Giraffe", "Zebra", "Bear", "Monkey", "Panda", "Kangaroo"],
+    "Fruits": ["Apple", "Banana", "Grapes", "Orange", "Mango", "Pineapple", "Strawberry", "Blueberry", "Watermelon", "Peach"],
+    "House Items": ["Chair", "Lamp", "Table", "Clock", "Bed", "Television", "Sofa", "Cupboard", "Shelf", "Fridge", "Desk", "Key", "Cup", "Curtain", "Wristwatch", "Alarm Clock"],
+    "Shapes": ["Circle", "Square", "Triangle", "Rectangle", "Oval", "Hexagon", "Octagon"]
 }
 
+# Improved fuzzy matching function
 
-def find_closest_match(detected_label):
-    detected_label_lower = detected_label.lower()
+
+def find_closest_match(self, detected_labels):
+    if not self.selected_category:
+        return None, None  # Ensure category selection before matching
+
+    detected_labels_lower = [label.lower() for label in detected_labels]
     best_match = None
     highest_score = 0
 
-    for category, items in categories.items():
-        for item in items:
-            match_score = process.extractOne(detected_label_lower, items)[1]
-            if match_score > highest_score:
-                highest_score = match_score
-                best_match = item
+    # Only search within the selected category
+    items_lower = [item.lower()
+                   for item in self.categories[self.selected_category]]
 
-    # Only accept high-confidence matches
-    return best_match if highest_score > 80 else None
+    for label in detected_labels_lower:
+        # Compare label against selected category items
+        match = process.extractOne(label, items_lower)
+        if match and match[1] > highest_score:  # Check match confidence
+            highest_score = match[1]
+            best_match = match[0]  # Get best-matching item
+
+    return (best_match, self.selected_category) if best_match and highest_score > 80 else (None, None)
 
 
 class DashboardApp:
@@ -40,7 +48,7 @@ class DashboardApp:
         self.root = root
         self.root.title("Toony Brain - Dashboard")
         self.root.geometry("1000x600")
-        self.root.configure(bg="#8000ff")  # Purple background
+        self.root.configure(bg="#8000ff")
 
         self.participant_name = participant_name
         self.sidebar_visible = False
@@ -48,18 +56,12 @@ class DashboardApp:
         self.category_buttons = {}
         self.category_images = {}
 
-        # This will store path of uploaded image
         self.img_path = None
 
-        # Define categories as an instance variable
-        self.categories = {
-            "Animals": ["Dog", "Cat", "Elephant", "Tiger", "Cow"],
-            "Fruits": ["Apple", "Banana", "Grapes", "Orange"],
-            "House Items": ["Chair", "Lamp", "Table", "Clock"],
-            "Shapes": ["Circle", "Square", "Triangle", "Rectangle"]
-        }
+        # Use the global category dictionary inside the class
+        self.categories = categories
 
-        # Add horizontal line under categories
+        # UI Setup
         line = tk.Frame(self.root, bg="grey", height=2, width=1200)
         line.place(relx=0.5, y=400, anchor="n")
 
@@ -148,7 +150,7 @@ class DashboardApp:
 
         categories = {
             "Animals": "animals.jpg",
-            "Food": "fruities.jpg",
+            "Fruits": "fruities.jpg",
             "House Items": "house-items.jpg",
             "Shapes": "shapes.png"
         }
@@ -261,14 +263,33 @@ class DashboardApp:
         self.preview_label.pack(side="left", expand=True, padx=20)
 
     def upload_image(self):
-
         file_path = filedialog.askopenfilename(
             filetypes=[("Image files", "*.png;*.jpg;*.jpeg")])
+
         if file_path:
-            self.img_path = file_path
-            labels = self.detect_labels(file_path)
-            # Generate quiz based on first detected label
-            self.generate_quiz(labels[0])
+            self.img_path = file_path  # Store file path
+
+            try:
+                # Run AWS Rekognition on the uploaded image
+                detected_labels = self.detect_labels(file_path)
+                print("Refined Labels:", detected_labels)  # Debugging output
+
+                if detected_labels:
+                    best_match = find_closest_match(
+                        detected_labels[0])  # Get closest match
+                    if best_match:
+                        # Generate quiz with best match
+                        self.generate_quiz(best_match)
+                    else:
+                        messagebox.showinfo(
+                            "Quiz Info", "No close matches found. Try another image!")
+                else:
+                    messagebox.showinfo(
+                        "Quiz Info", "No objects detected. Try another image!")
+
+            except Exception as e:
+                messagebox.showerror("Error", f"Failed to analyze image:\n{e}")
+                return  # Stop execution if detection fails
 
             try:
                 # Convert to RGB for PIL preview
@@ -281,9 +302,6 @@ class DashboardApp:
                 self.save_btn.config(state="disabled")
             except Exception as e:
                 messagebox.showerror("Error", f"Failed to load image:\n{e}")
-
-            labels = self.detect_labels(file_path)
-            print("Detected Labels:", labels)  # Check detected objects
 
     def apply_cartoon_effect(self, img):
         # Cartoonify effect using OpenCV
@@ -341,35 +359,47 @@ class DashboardApp:
         client = boto3.client('rekognition')
 
         with open(image_path, "rb") as image_file:
-            image_bytes = image_file.read()
             response = client.detect_labels(
-                Image={'Bytes': image_bytes},
+                Image={'Bytes': image_file.read()},
                 MaxLabels=5,
                 MinConfidence=70
             )
-            labels = [label['Name'] for label in response['Labels']]
-            return labels
 
-    def generate_quiz(self, detected_label):
-        detected_label_lower = detected_label.lower()
+        labels = [label['Name'] for label in response['Labels']]
 
-        for category, items in categories.items():
-            items_lower = [item.lower() for item in items]
-            if detected_label_lower in items_lower:
-                correct_answer = detected_label
-                wrong_answers = random.sample(
-                    [item for item in items if item.lower(
-                    ) != correct_answer.lower()], min(3, len(items)-1)
-                )
-                options = wrong_answers + [correct_answer]
-                random.shuffle(options)
+        # Exclude broad labels
+        excluded_labels = ["Animal", "Reptile", "Mammal", "Invertebrate"]
+        refined_labels = [
+            label for label in labels if label not in excluded_labels]
 
-                question = f"Which of the following is a {category}?"
-                self.display_quiz(question, options, correct_answer)
-                return
+        # Return refined labels or original list if no specific name is found
+        return refined_labels if refined_labels else labels
 
-        messagebox.showinfo(
-            "Quiz Info", f"'{detected_label}' not found in predefined categories. Try another image!")
+    def generate_quiz(self, detected_labels):
+        correct_answer, matched_category = self.find_closest_match(
+            detected_labels)  # Ensure match within category
+
+        if not correct_answer or not matched_category:
+            messagebox.showinfo(
+                "Quiz Info", f"No matching {self.selected_category} found. Try another image!")
+            return
+
+        # Debugging
+        print(
+            f"Matched Category: {matched_category}, Correct Answer: {correct_answer}")
+
+        # Ensure correct answer is in the options
+        wrong_answers = [item for item in self.categories[self.selected_category]
+                         if item.lower() != correct_answer.lower()]
+
+        if len(wrong_answers) >= 3:
+            wrong_answers = random.sample(
+                wrong_answers, 3)  # Pick 3 wrong answers
+        options = wrong_answers + [correct_answer]  # Include correct answer
+        random.shuffle(options)
+
+        question = f"Which of the following is a {self.selected_category}?"
+        self.display_quiz(question, options, correct_answer)
 
     def display_quiz(self, question, options, correct_answer):
         quiz_frame = tk.Frame(self.root, bg="#8000ff")
@@ -379,15 +409,16 @@ class DashboardApp:
         tk.Label(quiz_frame, text=question, font=("Arial", 16, "bold"),
                  bg="#8000ff", fg="white").pack(pady=10)
 
-        btn_frame = tk.Frame(quiz_frame, bg="#8000ff")  # Holds answer buttons
+        btn_frame = tk.Frame(quiz_frame, bg="#8000ff")
         btn_frame.pack(pady=5)
 
-        # Create answer buttons in two rows
-        btn_colors = "#32CD32"  # Green color for answers
+        btn_colors = "#32CD32"
         btn_width = 12
+        labels = ["A", "B", "C", "D"]  # Alphabet labels
 
         for i, option in enumerate(options):
-            btn = tk.Button(btn_frame, text=option, font=("Arial", 14), bg=btn_colors, fg="white",
+            btn_text = f"{labels[i]}) {option}"
+            btn = tk.Button(btn_frame, text=btn_text, font=("Arial", 14), bg=btn_colors, fg="white",
                             width=btn_width, height=2, command=lambda o=option: self.check_answer(o, correct_answer))
 
             if i < 2:
@@ -398,12 +429,29 @@ class DashboardApp:
 
         self.participant_scores = []  # Initialize score tracking
 
+        self.question_count = 0  # Initialize question counter
+        self.participant_scores = []  # Track scores
+
     def check_answer(self, chosen_option, correct_answer):
         self.participant_scores.append(
             1 if chosen_option == correct_answer else 0)
-        accuracy = np.mean(self.participant_scores) * 100
+        self.question_count += 1
+
+        if self.question_count < 10:
+            messagebox.showinfo(
+                "Quiz", "Upload another image for the same category!")
+            self.upload_image()  # Continue quiz
+        else:
+            self.show_final_score()
+
+    def show_final_score(self):
+        total_score = sum(self.participant_scores)
+        message = "Well done!" if total_score >= 5 else "Better luck next time!"
+
         messagebox.showinfo(
-            "Quiz Result", f"Your accuracy so far: {accuracy:.2f}%")
+            "Quiz Complete", f"Your final score: {total_score}/10\n{message}")
+        self.question_count = 0  # Reset for next round
+        self.participant_scores = []  # Reset scores
 
     def toggle_sidebar(self):
         if self.sidebar_visible:
